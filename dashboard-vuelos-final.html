@@ -1,0 +1,159 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Dashboard de Vuelos</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <style>
+    body {
+      background-color: #0a1a2f;
+      color: white;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 1rem;
+    }
+    h1, h2 { color: #00bfff; }
+    .chart-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 2rem;
+    }
+    canvas {
+      background: #fff;
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .novedades {
+      margin-top: 2rem;
+      background: #112244;
+      padding: 1rem;
+      border-radius: 8px;
+    }
+    .novedades h3 { color: #66ccff; }
+    .novedades ul { list-style: none; padding-left: 0; }
+    .novedades li {
+      border-bottom: 1px solid #334466;
+      padding: 0.5rem 0;
+    }
+  </style>
+</head>
+<body>
+  <h1>Dashboard de Bitácoras de Vuelo</h1>
+  <div class="chart-container" id="graficos"></div>
+  <div class="novedades">
+    <h3>Últimos vuelos con novedades</h3>
+    <ul id="listaNovedades"></ul>
+  </div>
+  <script>
+    const urlBitacora = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTqKm9I35Bar5-dIPyeR52S8s0MzUFxJDgvCvA68PmbJuZvXluztdxJuACjoLEkEDTY5zI70oa02fl4/pub?gid=0&single=true&output=csv';
+    const urlTermino = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTqKm9I35Bar5-dIPyeR52S8s0MzUFxJDgvCvA68PmbJuZvXluztdxJuACjoLEkEDTY5zI70oa02fl4/pub?gid=1798882714&single=true&output=csv';
+    function getTurno(fecha) {
+      const hora = new Date(fecha).getHours();
+      return (hora >= 8 && hora < 20) ? "Diurno" : "Nocturno";
+    }
+    async function fetchCSV(url) {
+      const response = await fetch(url);
+      const text = await response.text();
+      return new Promise(resolve => {
+        Papa.parse(text, {
+          header: true,
+          skipEmptyLines: true,
+          transformHeader: h => h.trim(),
+          complete: results => {
+            const cleanData = results.data.map(row => {
+              const cleanRow = {};
+              for (const key in row) {
+                cleanRow[key.trim()] = typeof row[key] === 'string' ? row[key].trim() : row[key];
+              }
+              return cleanRow;
+            });
+            resolve(cleanData);
+          }
+        });
+      });
+    }
+    async function cargarDatos() {
+      const [bitacora, termino] = await Promise.all([
+        fetchCSV(urlBitacora),
+        fetchCSV(urlTermino)
+      ]);
+      const pilotos = {};
+      const turnos = { Diurno: 0, Nocturno: 0 };
+      const vuelosPorDia = {};
+      const ranking = {};
+      const duraciones = {};
+      const novedades = [];
+      const kmPorPiloto = {};
+      for (let i = 0; i < bitacora.length && i < termino.length; i++) {
+        const b = bitacora[i];
+        const t = termino[i];
+        const piloto = b["NOMBRE PILOTO"];
+        const fechaInicioStr = b["Marca temporal"];
+        const fechaTerminoStr = t["Marca temporal"];
+        const nota = t["NOTAS DE VUELO"] || "";
+        const distancia = parseFloat((t["DISTANCIA RECORRIDA KM"] || "0").replace(",", "."));
+        if (!piloto || !fechaInicioStr || !fechaTerminoStr) continue;
+        const fechaInicio = new Date(fechaInicioStr);
+        const fechaTermino = new Date(fechaTerminoStr);
+        if (isNaN(fechaInicio) || isNaN(fechaTermino)) continue;
+        const dia = fechaInicio.toISOString().split("T")[0];
+        const turno = getTurno(fechaInicio);
+        const duracionMin = (fechaTermino - fechaInicio) / 60000;
+        pilotos[piloto] = (pilotos[piloto] || 0) + 1;
+        ranking[piloto] = (ranking[piloto] || 0) + duracionMin;
+        turnos[turno]++;
+        vuelosPorDia[dia] = (vuelosPorDia[dia] || 0) + 1;
+        duraciones[dia] = duraciones[dia] || [];
+        duraciones[dia].push(duracionMin);
+        kmPorPiloto[piloto] = (kmPorPiloto[piloto] || 0) + distancia;
+        if (nota && nota.length > 2 && nota.toLowerCase() !== 'sin novedades' && nota.toLowerCase() !== 'sin observaciones') {
+          novedades.push(`${dia} - ${piloto}: ${nota}`);
+        }
+      }
+      const graficos = document.getElementById("graficos");
+      graficos.innerHTML = "";
+      function crearGrafico(id, type, labels, data, label) {
+        const canvas = document.createElement("canvas");
+        canvas.id = id;
+        graficos.appendChild(canvas);
+        new Chart(canvas, {
+          type,
+          data: {
+            labels,
+            datasets: [{
+              label,
+              data,
+              backgroundColor: [
+                '#00bcd4', '#4caf50', '#ff9800', '#e91e63',
+                '#9c27b0', '#03a9f4', '#8bc34a', '#f44336'
+              ],
+              borderColor: '#0a1a2f',
+              borderWidth: 1
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: type !== 'bar' } }
+          }
+        });
+      }
+      crearGrafico('vuelosPorPiloto', 'pie', Object.keys(pilotos), Object.values(pilotos), 'Vuelos por piloto');
+      crearGrafico('kmPorPiloto', 'bar', Object.keys(kmPorPiloto), Object.values(kmPorPiloto), 'KM por piloto');
+      crearGrafico('rankingPilotos', 'bar', Object.keys(ranking), Object.values(ranking), 'Minutos por piloto');
+      crearGrafico('vuelosPorDia', 'bar', Object.keys(vuelosPorDia), Object.values(vuelosPorDia), 'Vuelos por día');
+      crearGrafico('duracionPromedio', 'bar',
+        Object.keys(duraciones),
+        Object.values(duraciones).map(arr => arr.reduce((a, b) => a + b, 0) / arr.length),
+        'Duración promedio (min)'
+      );
+      const novedadesUl = document.getElementById("listaNovedades");
+      novedadesUl.innerHTML = novedades.slice(-10).map(n => `<li>${n}</li>`).join("");
+    }
+    cargarDatos();
+    setInterval(cargarDatos, 10000);
+  </script>
+</body>
+</html>
